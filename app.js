@@ -45,6 +45,11 @@ const state = {
     pipStream: null,
     pipAnimId: null,
 
+    // Stream en ligne
+    streamMode: false,       // true = on écoute un stream, false = carte son
+    audioEl: null,           // <audio> qui lit le flux
+    streamUrl: '',           // URL du flux en cours
+
     // RAF
     rafId: null,
     running: false,
@@ -71,6 +76,16 @@ const dom = {
     retryBtn:       $('retryBtn'),
     app:            $('app'),
     audioSourceBtn: $('audioSourceBtn'),
+
+    // Stream
+    streamBtn:        $('streamBtn'),
+    stopStreamBtn:    $('stopStreamBtn'),
+    streamModal:      $('streamModal'),
+    streamUrlInput:   $('streamUrlInput'),
+    streamRecent:     $('streamRecent'),
+    streamError:      $('streamError'),
+    streamCancelBtn:  $('streamCancelBtn'),
+    streamConnectBtn: $('streamConnectBtn'),
 
     // VU-mètre
     clipIndicator:  $('clipIndicator'),
@@ -287,10 +302,14 @@ function showApp() {
     dom.app.classList.remove('hidden');
 }
 
-/** Démarre la capture audio */
+/** Démarre la capture audio (carte son) */
 async function startAudio(deviceId) {
     // Arrêt propre si déjà démarré
     stopAudio();
+
+    // Démarrer la carte son = sortir du mode stream
+    state.streamMode = false;
+    if (dom.streamBtn) updateStreamButtons();
 
     try {
         const constraints = {
@@ -354,11 +373,20 @@ function handleAudioError(err) {
     showError(title, msg);
 }
 
-/** Construit le graphe Web Audio */
+/** Construit le graphe Web Audio à partir de la carte son (MediaStream) */
 function buildAudioGraph() {
     state.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
     state.source = state.audioCtx.createMediaStreamSource(state.stream);
+    // Carte son : pas de sortie audible (on ne fait que mesurer le signal)
+    connectAnalysers(state.source, false);
+}
 
+/**
+ * Branche un nœud source sur les analysers (L, R, FFT).
+ * @param {AudioNode} sourceNode
+ * @param {boolean} toDestination  true = rend le son audible (utilisé pour les streams)
+ */
+function connectAnalysers(sourceNode, toDestination) {
     // Splitter stéréo L/R
     state.splitter = state.audioCtx.createChannelSplitter(2);
 
@@ -380,25 +408,245 @@ function buildAudioGraph() {
     const merger = state.audioCtx.createChannelMerger(1);
 
     // Connexions
-    state.source.connect(state.splitter);
+    sourceNode.connect(state.splitter);
     state.splitter.connect(state.analyserL, 0);   // L → analyser L
     state.splitter.connect(state.analyserR, 1);   // R → analyser R
     state.splitter.connect(merger, 0, 0);
     state.splitter.connect(merger, 1, 0);
     merger.connect(state.analyserFFT);
+
+    // Sortie audible (streams uniquement — évite le larsen avec la carte son)
+    if (toDestination) sourceNode.connect(state.audioCtx.destination);
 }
 
-/** Arrête la capture audio */
+/** Arrête la capture audio (carte son ET stream) */
 function stopAudio() {
     state.running = false;
     if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
     if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
+    if (state.audioEl) {
+        state.audioEl.pause();
+        state.audioEl.removeAttribute('src');
+        state.audioEl.load();
+        state.audioEl = null;
+    }
     if (state.audioCtx) { state.audioCtx.close(); state.audioCtx = null; }
+}
+
+// ═══════════════════════════════════════════════
+// MONITORING D'UN STREAM EN LIGNE
+// Lit un flux audio (<audio>) → Web Audio → analysers + haut-parleurs.
+// Le son de la carte son est coupé pendant l'écoute du stream.
+// ═══════════════════════════════════════════════
+
+/** Vérifie qu'une chaîne est une URL http(s) exploitable */
+function isValidStreamUrl(url) {
+    try {
+        const u = new URL(url);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (_) {
+        return false;
+    }
+}
+
+/** Démarre l'écoute + l'analyse d'un flux en ligne */
+async function startStream(url) {
+    stopAudio();
+
+    state.streamMode = true;
+    state.streamUrl  = url;
+    state.lufsBuffer = [];
+
+    try {
+        state.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+
+        const audioEl = new Audio();
+        audioEl.crossOrigin = 'anonymous';   // requis pour l'analyse Web Audio (CORS)
+        audioEl.preload     = 'auto';
+        audioEl.src         = url;
+        state.audioEl = audioEl;
+
+        // Erreurs réseau / décodage / CORS arrivent via l'event "error"
+        audioEl.addEventListener('error', onStreamMediaError, { once: true });
+
+        // Branche le flux sur les analysers ET sur les haut-parleurs (audible)
+        state.source = state.audioCtx.createMediaElementSource(audioEl);
+        connectAnalysers(state.source, true);
+
+        await audioEl.play();
+        if (state.audioCtx.state === 'suspended') await state.audioCtx.resume();
+
+        saveRecentStream(url);
+        closeStreamModal();
+        showApp();
+        updateStreamButtons();
+
+        state.running       = true;
+        state.lufsStartTime = Date.now();
+        loop();
+    } catch (err) {
+        failStream(streamErrorMessage(err));
+    }
+}
+
+/** Arrête le stream et repasse sur le son de la carte son */
+async function stopStream() {
+    state.streamMode = false;
+    state.streamUrl  = '';
+    updateStreamButtons();
+    // Revient sur la dernière entrée audio choisie
+    const savedId = selectedInputDeviceId && selectedInputDeviceId !== 'default'
+        ? selectedInputDeviceId : null;
+    await startAudio(savedId);
+}
+
+/** Annule le stream en cours et affiche l'erreur dans la modale */
+function failStream(msg) {
+    stopAudio();
+    state.streamMode = false;
+    updateStreamButtons();
+    openStreamModal();
+    showStreamError(msg);
+}
+
+/** Gère l'event "error" de l'élément <audio> */
+function onStreamMediaError() {
+    if (!state.streamMode) return;
+    const e = state.audioEl ? state.audioEl.error : null;
+    let msg = "Impossible de lire ce flux. Vérifiez l'URL.";
+    if (e) {
+        switch (e.code) {
+            case e.MEDIA_ERR_ABORTED:
+                msg = 'Lecture interrompue.';
+                break;
+            case e.MEDIA_ERR_NETWORK:
+                msg = 'Erreur réseau : le serveur du flux est injoignable.';
+                break;
+            case e.MEDIA_ERR_DECODE:
+                msg = 'Flux illisible : erreur de décodage audio.';
+                break;
+            case e.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                msg = "Flux inaccessible : format non supporté, ou le serveur n'autorise pas le CORS "
+                    + "(en-tête Access-Control-Allow-Origin manquant).";
+                break;
+        }
+    }
+    failStream(msg);
+}
+
+/** Construit un message lisible à partir d'une erreur play()/createMediaElementSource */
+function streamErrorMessage(err) {
+    if (!err) return 'Erreur inconnue lors de la lecture du flux.';
+    switch (err.name) {
+        case 'NotAllowedError':
+            return "Lecture bloquée par le navigateur. Cliquez à nouveau sur « Monitorer ».";
+        case 'NotSupportedError':
+            return "Flux non supporté ou CORS non autorisé par le serveur.";
+        case 'AbortError':
+            return 'Lecture interrompue.';
+        default:
+            return 'Impossible de lire ce flux : ' + (err.message || err.name);
+    }
+}
+
+/** Met à jour l'état visuel des boutons stream */
+function updateStreamButtons() {
+    if (state.streamMode) {
+        dom.streamBtn.classList.add('active');
+        dom.streamBtn.textContent = '📡 Stream en cours';
+        dom.stopStreamBtn.classList.remove('hidden');
+    } else {
+        dom.streamBtn.classList.remove('active');
+        dom.streamBtn.textContent = '📡 Monitorer un stream';
+        dom.stopStreamBtn.classList.add('hidden');
+    }
+}
+
+// ─── Modale de saisie de l'URL ───
+function openStreamModal() {
+    dom.streamError.classList.add('hidden');
+    dom.streamUrlInput.value = state.streamUrl || '';
+    renderRecentStreams();
+    dom.streamModal.classList.add('active');
+    setTimeout(() => dom.streamUrlInput.focus(), 50);
+}
+
+function closeStreamModal() {
+    dom.streamModal.classList.remove('active');
+}
+
+function showStreamError(msg) {
+    dom.streamError.textContent = msg;
+    dom.streamError.classList.remove('hidden');
+}
+
+/** Valide la saisie puis lance le stream */
+function submitStream() {
+    const url = dom.streamUrlInput.value.trim();
+    if (!url) {
+        showStreamError('Veuillez saisir une URL de flux.');
+        return;
+    }
+    if (!isValidStreamUrl(url)) {
+        showStreamError('URL invalide : elle doit commencer par http:// ou https://');
+        return;
+    }
+    dom.streamError.classList.add('hidden');
+    startStream(url);
+}
+
+// ─── Historique des flux récents (localStorage) ───
+const RECENT_STREAMS_KEY = 'lm_recentStreams';
+
+function loadRecentStreams() {
+    try {
+        const list = JSON.parse(localStorage.getItem(RECENT_STREAMS_KEY));
+        return Array.isArray(list) ? list : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveRecentStream(url) {
+    let list = loadRecentStreams().filter(u => u !== url);
+    list.unshift(url);
+    list = list.slice(0, 6);
+    localStorage.setItem(RECENT_STREAMS_KEY, JSON.stringify(list));
+}
+
+function renderRecentStreams() {
+    const container = dom.streamRecent;
+    container.innerHTML = '';
+    loadRecentStreams().forEach(url => {
+        const item = document.createElement('div');
+        item.className = 'stream-recent-item';
+        item.title = url;
+
+        const icon = document.createElement('span');
+        icon.textContent = '🕑';
+        const label = document.createElement('span');
+        label.className = 'sr-url';
+        label.textContent = url;
+
+        item.append(icon, label);
+        item.addEventListener('click', () => {
+            dom.streamUrlInput.value = url;
+            dom.streamUrlInput.focus();
+        });
+        container.appendChild(item);
+    });
 }
 
 // ═══════════════════════════════════════════════
 // UTILITAIRES DSP
 // ═══════════════════════════════════════════════
+
+/**
+ * Seuil de déclenchement du CLIP, exprimé sur le niveau affiché par le VU-mètre
+ * (RMS max L/R en dBFS). Le CLIP s'allume quand l'aiguille atteint le sommet de
+ * l'échelle. Ajustable : -1.0 = pile en haut, -3.0 = plus sensible.
+ */
+const CLIP_DB_THRESHOLD = -1.0;
 
 /** Convertit une valeur linéaire (0–1) en dBFS */
 function linToDb(lin) {
@@ -420,20 +668,6 @@ function rms(buf) {
     let sum = 0;
     for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
     return Math.sqrt(sum / buf.length);
-}
-
-/**
- * Peak d'un buffer Float32
- * @param {Float32Array} buf
- * @returns {number} valeur peak 0–1
- */
-function peak(buf) {
-    let max = 0;
-    for (let i = 0; i < buf.length; i++) {
-        const v = Math.abs(buf[i]);
-        if (v > max) max = v;
-    }
-    return max;
 }
 
 // ═══════════════════════════════════════════════
@@ -910,12 +1144,13 @@ function loop(timestamp) {
 
     // ── Niveaux ──────────────────────────────
     const rmsL = rms(tdL), rmsR = rms(tdR);
-    const pkL  = peak(tdL), pkR  = peak(tdR);
     const dbL  = linToDb(rmsL);
     const dbR  = linToDb(rmsR);
-    const isClipping = pkL >= 0.9999 || pkR >= 0.9999;
+    // CLIP basé sur le niveau global affiché par le VU-mètre (RMS max L/R) :
+    // s'allume seulement quand l'aiguille atteint le haut de l'échelle (≈ 0 dB)
+    const isClipping = Math.max(dbL, dbR) >= CLIP_DB_THRESHOLD;
 
-    renderVuMeter(dbL, dbR, linToDb(pkL), linToDb(pkR), isClipping);
+    renderVuMeter(dbL, dbR, dbL, dbR, isClipping);
 
     // ── Spectre ───────────────────────────────
     const specDomFreq = renderSpectrum(freqData);
@@ -1193,6 +1428,20 @@ dom.retryBtn.addEventListener('click', () => {
 dom.audioSourceBtn.addEventListener('click', e => {
     e.stopPropagation();
     openInputSourcePanel(dom.audioSourceBtn);
+});
+
+// ─── Stream : ouverture modale, connexion, arrêt ───
+dom.streamBtn.addEventListener('click', openStreamModal);
+dom.stopStreamBtn.addEventListener('click', stopStream);
+dom.streamConnectBtn.addEventListener('click', submitStream);
+dom.streamCancelBtn.addEventListener('click', closeStreamModal);
+dom.streamUrlInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submitStream(); }
+    if (e.key === 'Escape') closeStreamModal();
+});
+// Fermeture au clic sur le fond de la modale
+dom.streamModal.addEventListener('click', e => {
+    if (e.target === dom.streamModal) closeStreamModal();
 });
 
 // Fermer l'overlay silence (dismissed jusqu'au prochain retour du signal)

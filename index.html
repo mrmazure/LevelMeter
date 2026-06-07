@@ -25,6 +25,14 @@
             <button id="audioSourceBtn" class="control-btn audio-source-btn" title="Choisir la source audio d'entrée">
                 🎙 Entrée audio
             </button>
+            <!-- Monitoring d'un stream radio en ligne -->
+            <button id="streamBtn" class="control-btn stream-btn" title="Monitorer le son d'une radio en ligne">
+                📡 Monitorer un stream
+            </button>
+            <!-- Repasse sur le son de la carte son (visible seulement quand un stream est actif) -->
+            <button id="stopStreamBtn" class="control-btn stop-stream-btn hidden" title="Arrêter le stream et revenir au son de la carte son">
+                ⏹ Arrêter le stream
+            </button>
             <!-- PiP button -->
             <button id="pipBtn" class="control-btn pip-btn" title="Ouvrir le vumètre en Picture-in-Picture">
                 <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
@@ -52,6 +60,26 @@
             <h2 id="errorTitle">Erreur</h2>
             <p id="errorMsg"></p>
             <button id="retryBtn" class="btn-primary">Réessayer</button>
+        </div>
+    </div>
+
+    <!-- ══════════════════ MONITORER UN STREAM — saisie de l'URL ══════════════════ -->
+    <div id="streamModal" class="overlay">
+        <div class="overlay-card">
+            <div class="overlay-icon">📡</div>
+            <h2>Monitorer un stream</h2>
+            <p>Collez l'URL d'un flux audio en ligne (Icecast / Shoutcast, .mp3, .aac, .ogg…).
+               Le son de la carte son est mis en pause pendant l'écoute du stream.</p>
+            <input id="streamUrlInput" type="url" class="stream-url-input" autocomplete="off" spellcheck="false"
+                   placeholder="https://exemple.com/stream.mp3">
+            <div id="streamRecent" class="stream-recent"></div>
+            <p id="streamError" class="stream-error hidden"></p>
+            <div class="stream-modal-actions">
+                <button id="streamCancelBtn" class="control-btn">Annuler</button>
+                <button id="streamConnectBtn" class="btn-primary">▶ Monitorer</button>
+            </div>
+            <p class="stream-note">⚠ Le flux doit autoriser le CORS (<code>Access-Control-Allow-Origin</code>)
+               pour que l'analyse fonctionne. Sinon les vumètres resteront à zéro.</p>
         </div>
     </div>
 

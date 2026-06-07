@@ -67,6 +67,10 @@ body {
     justify-content: space-between;
     padding: 0 24px;
     gap: 16px;
+    /* Au-dessus des overlays permission/erreur (z-index 100) pour garder
+       le bouton "Monitorer un stream" accessible même sans micro autorisé */
+    position: relative;
+    z-index: 110;
 }
 
 .logo-container {
@@ -139,6 +143,28 @@ body {
     color: var(--accent);
 }
 
+/* Bouton "Monitorer un stream" actif (un stream est en cours) */
+.stream-btn.active {
+    border-color: var(--accent);
+    background: rgba(99,102,241,0.15);
+    color: var(--accent);
+}
+
+/* Bouton "Arrêter le stream" — teinte danger */
+.stop-stream-btn {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.stop-stream-btn:hover {
+    background: rgba(239,68,68,0.15);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+/* Utilitaire générique d'affichage */
+.hidden { display: none !important; }
+
 .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -191,6 +217,9 @@ body {
 
 .overlay.active { display: flex; }
 
+/* La modale stream passe au-dessus du header (z-index 110) */
+#streamModal { z-index: 200; }
+
 .overlay-card {
     background: var(--bg-panel);
     border: 1px solid var(--border);
@@ -208,6 +237,89 @@ body {
 .overlay-icon { font-size: 3rem; line-height: 1; }
 .overlay-card h2 { font-size: 1.2rem; font-weight: 700; }
 .overlay-card p  { font-size: 0.9rem; color: var(--text-muted); line-height: 1.6; }
+
+/* ─── Modale "Monitorer un stream" ─── */
+.stream-url-input {
+    width: 100%;
+    height: 42px;
+    padding: 0 14px;
+    background: var(--bg-element);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    font-family: var(--font-family);
+    font-size: 0.9rem;
+}
+
+.stream-url-input::placeholder { color: var(--text-muted); }
+.stream-url-input:focus { outline: none; border-color: var(--accent); }
+
+.stream-recent {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+}
+
+.stream-recent:empty { display: none; }
+
+.stream-recent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-element);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.stream-recent-item:hover { background: var(--bg-hover); color: var(--text-main); }
+
+.stream-recent-item .sr-url {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.overlay-card .stream-error {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(239,68,68,0.12);
+    border: 1px solid rgba(239,68,68,0.4);
+    color: var(--danger);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    text-align: left;
+}
+
+.stream-modal-actions {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    justify-content: flex-end;
+}
+
+.stream-note {
+    font-size: 0.75rem !important;
+    color: var(--text-muted);
+    line-height: 1.5;
+    opacity: 0.85;
+}
+
+.stream-note code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    background: var(--bg-element);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
 
 /* ═══════════════════════════════════════════════
    MAIN APP — CHAÎNE FLEX POUR RESIZE TOTAL
@@ -1166,6 +1278,10 @@ body {
     .subtitle { font-size: 0.8rem; }
     .source-select { min-width: 110px; font-size: 0.8rem; }
     .control-btn   { padding: 0 10px; font-size: 0.8rem; height: 32px; }
+
+    .stream-modal-actions { flex-direction: column-reverse; }
+    .stream-modal-actions .control-btn,
+    .stream-modal-actions .btn-primary { width: 100%; justify-content: center; }
 
     #app { padding: 8px; gap: 8px; }
 
